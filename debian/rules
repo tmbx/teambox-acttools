@@ -1,0 +1,121 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#!/usr/bin/make -f
+
+GNUTLS_MAJOR:=$(shell test -x /usr/bin/dpkg && dpkg --status libgnutls-dev | grep ^Version | cut -d ':' -f 2 | cut -d '.' -f 1)
+
+# Uncomment this to turn on verbose mode.
+export DH_VERBOSE=1
+
+build:
+	(cd kpsinstalltool && \
+		$(MAKE) LIBKTOOLS_INCLUDE=/usr/include/libktools \
+		        LIBKTOOLS_LIB=/usr/lib \
+	                TAGCRYPT_INCLUDE=/usr/include/tagcrypt \
+			TAGCRYPT_LIB=/usr/lib)
+	(cd sslsigntool && $(MAKE))
+
+# FIXME: I don't like that exception, but for now we don't need
+# verifyorgcert on any distributed platforms.
+
+ifeq ($(GNUTLS_MAJOR), 2)
+	(cd verifyorgcert && \
+		$(MAKE) LIBKTOOLS_INCLUDE=/usr/include/libktools \
+			LIBKTOOLS_LIBRARY=/usr/lib)
+endif
+
+install: build
+	dh_testdir
+	dh_testroot
+	dh_clean
+	dh_installdirs
+
+# Install the binaries for teambox-acttools-admin
+	mkdir -p $(CURDIR)/debian/teambox-acttools/usr/bin
+	mkdir -p $(CURDIR)/debian/teambox-acttools/usr/share/python-support/teambox-acttools/acttools
+	mkdir -p $(CURDIR)/debian/teambox-acttools/usr/share/python-support/teambox-acttools/actadmcmds
+	mkdir -p $(CURDIR)/debian/teambox-acttools/usr/share/python-support/teambox-acttools/cliadmcmds
+	mkdir -p $(CURDIR)/debian/teambox-acttools/usr/share/doc/teambox-acttools
+
+	install -m755 adminacttools/actadm \
+		$(CURDIR)/debian/teambox-acttools/usr/bin/actadm
+	install -m755 adminacttools/cliadm \
+		$(CURDIR)/debian/teambox-acttools/usr/bin/cliadm
+	install -m755 adminacttools/insertclient \
+		$(CURDIR)/debian/teambox-acttools/usr/bin/insertclient
+
+ifeq ($(GNUTLS_MAJOR), 2)
+	install -m755 verifyorgcert/verifyorgcert \
+		$(CURDIR)/debian/teambox-acttools/usr/bin/verifyorgcert
+endif
+
+	install -m644 adminacttools/acttools/*.py \
+		$(CURDIR)/debian/teambox-acttools/usr/share/python-support/teambox-acttools/acttools
+	install -m644 adminacttools/actadmcmds/*.py \
+		$(CURDIR)/debian/teambox-acttools/usr/share/python-support/teambox-acttools/actadmcmds
+	install -m644 adminacttools/cliadmcmds/*.py \
+		$(CURDIR)/debian/teambox-acttools/usr/share/python-support/teambox-acttools/cliadmcmds
+
+	install -m644 keys/README \
+		$(CURDIR)/debian/teambox-acttools/usr/share/doc/teambox-acttools/README
+
+# Install the binaries for teambox-acttools
+	mkdir -p debian/teambox-acttools/usr/bin
+	mkdir -p debian/teambox-acttools/usr/share/teambox-acttools
+
+	install -m755 kpsinstalltool/kpsinstalltool \
+		debian/teambox-acttools/usr/bin/kpsinstalltool
+	install -m755 sslsigntool/sslsigntool \
+		debian/teambox-acttools/usr/bin/sslsigntool
+	install -m755 adminacttools/update_bundle \
+		debian/teambox-acttools/usr/bin/update_bundle
+	install -m755 adminacttools/update_bundle_k2 \
+		debian/teambox-acttools/usr/bin/update_bundle_k2
+
+# Install the public keys.
+	install -m644 keys/teambox_kps_email.sig.pkey \
+	 debian/teambox-acttools/usr/share/teambox-acttools/teambox_kps_email.sig.pkey
+	install -m644 keys/teambox_kps_install_cert.pem \
+	 debian/teambox-acttools/usr/share/teambox-acttools/teambox_kps_install_cert.pem
+	c_rehash debian/teambox-acttools/usr/share/teambox-acttools
+
+	install -m644 keys/README \
+		debian/teambox-acttools/usr/share/teambox-acttools/README
+
+binary-indep:
+
+binary-arch-teambox-acttools: install
+	dh_testdir
+	dh_testroot
+	dh_installdocs -pteambox-acttools
+	dh_pysupport
+	dh_link -pteambox-acttools
+	dh_strip -pteambox-acttools
+	dh_compress -pteambox-acttools
+	dh_fixperms -pteambox-acttools
+	dh_installdeb -pteambox-acttools
+	dh_shlibdeps -pteambox-acttools
+	dh_gencontrol -pteambox-acttools
+	dh_md5sums -pteambox-acttools
+	dh_builddeb -pteambox-acttools
+
+# Build architecture-dependent files here.
+binary-arch: binary-arch-teambox-acttools
+
+binary: binary-indep binary-arch
+.PHONY: build clean binary-indep binary-arch binary install

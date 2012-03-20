@@ -1,0 +1,79 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#!/usr/bin/env python
+# Hey, Emacs! This is a -*- Python -*- file
+# -*- encoding: utf-8 -*-
+# Copyright (C) 2006-2012 Opersys inc.  All rights reserved.
+# Author: Francois-Denis Gonthier
+
+import actadmcmds, getopt
+from kctllib.kparams import *
+from kreadline import *
+from ConfigParser import *
+from acttools import *
+
+def main():
+    kparams_init()
+
+    basedir = "/etc/teambox/act"
+    do_debug = False
+
+    # Initialize the global cliadm configuration variable.
+    config_path = os.path.expanduser("~/.actadm.conf")
+
+    conf = ConfigParser()
+
+    if os.path.exists(config_path):
+        try:
+            conf.readfp(file(config_path, "r"))
+        except Exception, ex:
+            sys.stderr.write("Error: %s\n" % str(ex))
+            sys.exit(1)
+
+    if conf.has_option("config", "teambox_ssl_cert_path"):
+        Activation.teambox_ssl_cert_path = conf.get("config", "teambox_ssl_cert_path")
+    if conf.has_option("config", "teambox_email_pkey_path"):
+        Activation.teambox_email_pkey_path = conf.get("config", "teambox_email_pkey_path")
+
+    try:
+        (options, cmd_args) = getopt.gnu_getopt(sys.argv[1:], "Db:")
+
+    except Exception, e:
+        sys.stderr.write("Error: %s" % str(e))
+        sys.exit(1)
+
+    for opt in options:
+        if opt[0] == "-b":
+            basedir = opt[1]
+        if opt[0] == "-D":
+            do_debug = True
+
+    intr = CommandInterpreter(actadmcmds.command_classes, "> ", debug_mode = do_debug)
+    intr.basedir = basedir
+
+    if cmd_args:
+        sys.exit(intr.run_command(cmd_args))
+    else:
+        sys.stdout.write(
+            """BEWARE: This is a very low-level tool that is used to manipulate activation
+        information.  Do not use this tool unless you are familiar with the
+        activation process.  Press Ctrl+D to quit.\n""")
+        intr.loop()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,539 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#!/usr/bin/env python
+# Hey, Emacs, This Is a -*- python -*- file.
+
+# ractivate activates ANY TBXSOS, KPS, WhateverIsTheCurrentAcronym,
+# from the comfort of you desktop machine.
+
+import cliadmcmds, sys, os.path, getpass
+from paramiko import SSHClient, BadHostKeyException
+from ConfigParser import ConfigParser
+from select import select
+
+# kpython
+from kfile import read_file
+
+root = ""
+
+class RActivateException(Exception): pass
+
+class Status:
+    Config = None
+    ConfigPath = None
+    AdminSSH = None
+    ClientSSH = None
+    CSR = None
+    Cert = None
+    KAR = None
+    KAP = None
+    Debug = 0
+    Undoable = True
+
+class Command:
+    def exec_command(self, cmd):
+        """Execute a command over an SSH channel."""
+        sshTransport = self.SSH.get_transport()
+        cmdChannel = sshTransport.open_session()
+
+        # Make sure we get debugging output.
+        cmd[0] += " -D"
+        if self.Debug >= 1:
+            print "\t" + " ".join(cmd)
+
+        # This was for development. Kept for posterity.
+        if root:
+            cmd[0] = root + "/" + cmd[0] + " -D"
+
+        c = " ".join(cmd)
+        cmdChannel.exec_command(c)
+
+        # Completely flush the input into the command.
+        if self.In:
+            cmdChannel.sendall(self.In)
+            cmdChannel.shutdown_write()
+
+        # Set the channel to be non-blocking now since we
+        # need to poll over stdout and stderr.
+        cmdChannel.setblocking(False)
+
+        stdout_closed = False
+        stderr_closed = False
+        while not (stdout_closed and stderr_closed) or not cmdChannel:
+            # Read stdout.
+            try:
+                s = cmdChannel.recv(1024)
+                if s == "": stdout_closed = True
+                else:
+                    if self.Out: self.Out += s
+                    else: self.Out = s
+            except: pass
+
+            # Read stderr.
+            try:
+                s = cmdChannel.recv_stderr(1024)
+                if s == "": stderr_closed = True
+                else:
+                    if self.Err: self.Err += s
+                    else: self.Err = s
+            except: pass
+            if not (stdout_closed and stderr_closed):
+                select([cmdChannel.fileno()], [], [])
+
+        # Wait for the remote command to finish and get the return code.
+        self.ExitStatus = cmdChannel.recv_exit_status()
+        cmdChannel.close()
+
+        if self.Debug >= 2:
+            def is_text(s):
+                for c in s:
+                    if ord(c) in [9, 10, 13]: continue
+                    if ord(c) >= 32 and ord(c) <= 127: continue
+                    return False
+                return True
+
+            # Check if either stdout and stderr are binary before outputing them.
+            if self.Out:
+                if is_text(self.Out):
+                    print "--> " + self.Out
+                else:
+                    print "--> [" + str(len(self.Out)) + " bytes binary data.]"
+            if self.Err:
+                if is_text(self.Err):
+                    print "E-> " + self.Err
+                else:
+                    print "E-> [" + str(len(self.Err)) + " bytes binary data.]"
+
+        # Non-zero return code means the command has failed..
+        if self.ExitStatus != 0:
+            raise RActivateException("Non-zero exit from command.")
+
+    def __init__(self, SSH):
+        self.SSH = SSH
+        self.In = None
+        self.Out = None
+        self.Err = None
+        self.ExitStatus = None
+
+class AddClient(Command):
+    """Create the identity for the client on the target KPS. This is the
+    only action that need to support Undo on the administrative side."""
+
+    def __str__(self):
+        return "Creating new administrative identity."
+
+    def do(self, status):
+        """Create new identity in the client manager."""
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        self.In = read_file(status.ConfigPath)
+        self.exec_command(["cliadm", "-y", "addclient", kdn, "@stdin"])
+
+    def undo(self, status):
+        """Delete the client remotely."""
+        kdn = status.Config.get("config", "kdn")
+        self.exec_command(["cliadm", "-y", "rmclient", kdn])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class CreateIdentity(Command):
+    """Create an identity for the client on the target KPS."""
+
+    def __str__(self):
+        return "Creating KPS identity."
+
+    def do(self, status):
+        """Create the desired identity on the remote side."""
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.In = read_file(status.ConfigPath)
+        self.exec_command(["actadm", "newidentity", id_name, "@stdin"])
+
+    def undo(self, status):
+        """Delete the identity created for the client."""
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "rmidentity", id_name])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class GetCSR(Command):
+    """Generate a certificate request that will be used to assert the client identity."""
+
+    def __str__(self):
+        return "Obtaining the certificate request from the KPS."
+
+    def do(self, status):
+        """Obtain the CSR from the desired identity."""
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "showcsr", id_name])
+        status.CSR = self.Out
+        if not status.CSR:
+            raise RActivateException("Did not receive the certificate request.")
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class SignCSR(Command):
+    """Sign the KPS certificate request from the client, asserting its identity for
+    the next steps."""
+
+    def __str__(self):
+        return "Signing the certificate request."
+
+    def do(self, status):
+        """Sign the certificate request from the client."""
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        self.In = status.CSR
+        self.exec_command(["cliadm", "-y", "-c", kdn, "signcsr", "@stdin", "@stdout"])
+        status.Cert = self.Out
+        if not status.Cert:
+            raise RActivateException("Did not receive the signed certificate.")
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class AssertIdentity(Command):
+    """Identity assertion on the KPS. Receives the signed certificate request."""
+
+    def __str__(self):
+        return "Asserting identity on the KPS."
+
+    def do(self, status):
+        """Set the certificate."""
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.In = status.Cert
+        self.exec_command(["actadm", "setcert", id_name, "@stdin"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class SetEncryptionKeys(Command):
+    """Use pregenerated encryption keys on the KPS."""
+
+    def __str__(self):
+        return "Sending pregenerated keys to the KPS."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        enc_skey = status.Config.get("config", "enc_skey")
+        enc_pkey = status.Config.get("config", "enc_pkey")
+        self.In = enc_pkey + "@" + enc_skey
+        self.exec_command(["actadm", "newkeys", id_name, "@stdin"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class NewKeys(Command):
+    """Generate encryption keys on the KPS."""
+
+    def __str__(self):
+        return "Creating activator keys on the KPS."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "newkeys", id_name])
+
+    def undo(self, status):
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "rmkeys", id_name])
+
+class NewActivator(Command):
+    """Prepare to generate a Teambox activation package using the identity and
+    the set of key that was previously generated."""
+
+    def __str__(self):
+        return "Creating activator on KPS."
+
+    def do(self, status):
+        """Create the activator on the client."""
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "newactivator", id_name, id_name, id_name])
+
+    def undo(self, status):
+        """Delete the activator."""
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "rmactivator", id_name])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class GenKAR(Command):
+    """Generate a Teambox Activation Request."""
+
+    def __str__(self):
+        return "Generating KAR on the KPS."
+
+    def do(self, status):
+        """Generate the KAR on the client."""
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.exec_command(["actadm", "genkar", id_name, "@stdout"])
+        status.KAR = self.Out
+        if not status.KAR:
+            raise RActivateException("Did not receive the Teambox Activation Request.")
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class OpenKAR(Command):
+    """Save, open and check the Teambox Activation request sent by the client."""
+
+    def __str__(self):
+        return "Administratively handling the KAR."
+
+    def do(self, status):
+        """Save, open and check the KAR from the client."""
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        self.In = status.KAR
+        self.exec_command(["cliadm", "-y", "-c", kdn, "setkar", "@stdin", "openkar", "vcert"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class SetSignatureKeys(Command):
+    """Push the signature key ID to the administration interface."""
+
+    def __str__(self):
+        return "Sending pregenerated signature keys."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        key_id = status.Config.get("config", "key_id")
+        sig_pkey = status.Config.get("config", "sig_pkey")
+        sig_skey = status.Config.get("config", "sig_skey")
+        self.In = sig_pkey + "@" + sig_skey
+        self.exec_command(["cliadm", "-y", "-c", kdn, "setkeys", key_id, "@stdin"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class GenKeys(Command):
+    """Generate a key ID then a set of signature keys for the client."""
+
+    def __str__(self):
+        return "Generating signature keys."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        self.exec_command(["cliadm", "-y", "-c", kdn, "genkeys"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class GetKAP(Command):
+    """Generate the activation package for the client."""
+
+    def __str__(self):
+        return "Generating the activation packet."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        unstable = status.Config.getint("config", "unstable")
+        cmd = ["cliadm", "-y", "-c", kdn, "genkap", "@stdout"]
+        if unstable == 1:
+            cmd += ["unstable"]
+        self.exec_command(cmd)
+
+        status.KAP = self.Out
+        if not status.KAP:
+            raise RActivateException("Did not receive the Teambox Activation Package.")
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class SetKAP(Command):
+    """Save and apply the activation package from the client."""
+
+    def __str__(self):
+        return "Applying activation packet."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        id_name = status.Config.get("config", "identity")
+        self.In = status.KAP
+        # Cannot enter undo mode after this.
+        self.Undoable = False
+        self.exec_command(["actadm", "openkap", id_name, "@stdin", "applykap"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+class PushKOS(Command):
+    """Push activation on the online services."""
+
+    def __str__(self):
+        return "Uploading to KOS."
+
+    def do(self, status):
+        self.Debug = status.Debug
+        kdn = status.Config.get("config", "kdn")
+        self.In = status.KAP
+        self.exec_command(["cliadm", "-c", kdn, "-y", "genkos", "pushkos"])
+
+    def __init__(self, SSH):
+        Command.__init__(self, SSH)
+
+def ssh_connect(hostname, port, username, password = None):
+    class IdioticHostKeyPolicy:
+        def missing_host_key(self, client, hostname, key): return
+
+    sshClient = SSHClient()
+    sshClient.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+    # First try.
+    if not password:
+        password = getpass.getpass("Password for host %s@%s:%d: " % (username, hostname, port))
+    try:
+        sshClient.connect(hostname, port, username, password)
+    except BadHostKeyException, e:
+        # Second try, but this time to hell with the host key.
+        do_force = raw_input("Oops wrong or unknown host key for %s. Force connection (Y/n)? " % hostname)
+        if do_force == "y" or do_force == "Y":
+            sshClient.set_missing_host_key_policy(IdioticHostKeyPolicy())
+            sshClient.get_host_keys().clear()
+            sshClient.connect(hostname, port, username, password)
+        else:
+            sys.stderr.write("Cancelled.\n")
+            sys.exit(1)
+    sys.stdout.write("Connected to %s@%s:%d\n" % (username, hostname, port))
+    return sshClient
+
+def safe_get(cfg, sec, opt):
+    if not cfg.has_option(sec, opt): 
+        return None
+    else:
+        return cfg.get(sec, opt)
+
+if len(sys.argv) < 2:
+    print "Usage: ractivate [<.ini file>]"
+    sys.exit(1)
+
+if not os.path.exists(sys.argv[1]):
+    print "File %s not found." % sys.argv[1]
+    sys.exit(1)
+
+# Initialize the status.
+status = Status()
+status.Config = ConfigParser()
+status.ConfigPath = sys.argv[1]
+status.Config.readfp(open(status.ConfigPath, "r"))
+status.Debug = status.Config.get("ractivate", "debug")
+
+status.ClientSSH = ssh_connect(status.Config.get("ractivate", "client_host"),
+                               status.Config.getint("ractivate", "client_port"),
+                               status.Config.get("ractivate", "client_username"),
+                               safe_get(status.Config, "ractivate", "client_password"))
+
+status.AdminSSH = ssh_connect(status.Config.get("ractivate", "admin_host"),
+                              status.Config.getint("ractivate", "admin_port"),
+                              status.Config.get("ractivate", "admin_username"),
+                              safe_get(status.Config, "ractivate", "admin_password"))
+
+do_list = []
+
+# Establish the actions that need to be done given the configuration
+# file.
+
+# See if we need to create the client.
+if status.Config.getint("ractivate", "exists") == 0:
+    do_list += [AddClient(status.AdminSSH)]
+
+# Those feature are not dependent on the current state of the client.
+do_list += [CreateIdentity(status.ClientSSH),
+            GetCSR(status.ClientSSH),
+            SignCSR(status.AdminSSH),
+            AssertIdentity(status.ClientSSH)]
+
+# If we have pregenerated keys, we need to push encryption keys to the
+# client activation data.
+if status.Config.getint("ractivate", "use_keys") == 1:
+    do_list += [SetEncryptionKeys(status.ClientSSH)]
+else:
+    do_list += [NewKeys(status.ClientSSH)]
+
+# KAR management is always done.
+do_list += [NewActivator(status.ClientSSH),
+            GenKAR(status.ClientSSH),
+            OpenKAR(status.AdminSSH)]
+
+# If we have pregenerated keys, we need to push the signature keys to
+# the administration interface.
+if status.Config.getint("ractivate", "use_keys") == 1:
+    do_list += [SetSignatureKeys(status.AdminSSH)]
+else:
+    do_list += [GenKeys(status.AdminSSH)]
+
+# KAP management is safe for any kind of client at this point.
+do_list += [GetKAP(status.AdminSSH),
+            SetKAP(status.ClientSSH)]
+
+# We only push to the KOS if we are told to do so and if the client
+# doesn't already exists (so we don't scrap existing data).
+if status.Config.getint("ractivate", "kos") == 1 and status.Config.getint("ractivate", "exists") == 0:
+    do_list += [PushKOS(status.AdminSSH)]
+
+undo_list = []
+
+try:
+    # Try to execute each command in the list, in order.
+    while do_list:
+        op = do_list.pop(0)
+        print "DO: " + str(op)
+
+        # Try to execute the command proper.
+        try:
+            op.do(status)
+            # If the command was successful, add it to the list
+            # of commands that we could undo.
+            undo_list.insert(0, op)
+
+        except RActivateException, e:
+            # Upon catching an error in the commands, try to undo each
+            # command that we can undo.
+            sys.stderr.write("ERROR: " + str(op) + "\n")
+            do_undo = bool(int(status.Config.get("ractivate", "undo_mode")))
+            if not do_undo:
+                print "Not entering undo mode per configuration."
+            elif not status.Undoable:
+                print "Cannot enter undo mode past this point."
+            else:
+                if undo_list:
+                    print "Entering undo mode."
+                while undo_list:
+                    op = undo_list.pop(0)
+                    if hasattr(op, "undo"):
+                        print "UNDO: " + str(op)
+                        op.undo(status)
+            break
+except Exception, e:
+    sys.stderr.write("Unknown exception: not entering undo mode.")
+    raise
+finally:
+    status.AdminSSH.close()
+    status.ClientSSH.close()

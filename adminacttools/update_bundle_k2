@@ -1,0 +1,81 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#!/bin/sh
+
+set -e
+
+unstable_bundle=/etc/teambox/bundles/tbxsos.bundle.unstable
+stable_bundle=/etc/teambox/bundles/tbxsos.bundle
+
+if [ ! -d /etc/teambox/bundles ]; then
+    mkdir -p /etc/teambox/bundles
+fi
+
+case $1 in
+    # Generate a new unstable bundle.
+    new)
+        tempdir=$(mktemp -d)
+        tempbundle=$(mktemp)
+
+        mkdir -p $tempdir/repos/conf
+        cat > $tempdir/repos/conf/distributions <<EOF
+Origin: Teambox
+Label: Teambox KPS
+Suite: stable
+Codename: k2
+Architectures: i386
+Components: main
+UDebComponents: main
+Update: k2
+Description: Teambox Debian Packages
+Packages: tbxsosd-tbxsos
+EOF
+
+        cat > $tempdir/repos/conf/updates <<EOF
+Name: k2
+Suite: k2
+Architectures: i386
+Method: http://ketchupng/debian
+Components: main
+UDebComponents: main
+FilterFormula: Package (==tbxsosd-tbxsos)
+EOF
+
+        reprepro --ignore=unknownfield -s -b $tempdir/repos update
+
+        rm -rf $tempdir/repos/db
+        rm -rf $tempdir/repos/lists
+
+        tar -C $tempdir -zcf $tempbundle .
+
+        mv $tempbundle $unstable_bundle
+        chmod a+r $unstable_bundle
+    ;;
+
+    # Change the state of the bundle from unstable to stable.
+    commit)
+        if [ -e $unstable_bundle ]; then
+            cp $unstable_bundle $stable_bundle
+        fi
+        ;;
+
+    *)
+        echo "Error: update_bundle [new|commit]"
+esac
+
+exit 0

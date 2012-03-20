@@ -1,0 +1,64 @@
+ABOUT THE PROGRAM
+
+ractivate is a fancy new program that does scripted KPS activation
+over SSH.
+
+The activation data is taken from an .ini file and includes a lot of
+interesting features. The sample ini file ractivate.sample.ini is
+abundantly documented.
+
+This script does a PROPER activation. It operates simultaneously on
+the KPS database and on the client database (ex: cliadm on
+Shiitake). You can still use the broken automated activation from
+teambox-console-setup to have a working KPS quickly without any kind
+of hassle.
+
+OPERATIONS: SSH CONNECTIONS
+
+This programs needs to do 2 SSH connection to function: 1 to the
+target KPS and the second to a client administration machine (cliadm
+installed). The 2 connections are done for 2 reasons: the first one is
+that it's pretty cool to be able to fully activate a KPS from the
+comfort of your desktop: the second one is that it greatly simplified
+the development of ractivate because it meant that both the KPS and
+the administration side could be developed using a Request/Response
+paradigm.
+
+SSH authentication is expected to be done by password but it would be
+pretty easy to support other means of authentication. It also have
+some code to handle the case where the host key of the KPS isn't
+recognized so KPS host keys don't have to be known in advance or
+anything.
+
+This program uses the interesting 'paramiko' Python library to give it
+more control over how commands are executed over SSH. 'paramiko'
+allows ractivate to maintain the 2 SSH connections over the whole
+execution of the program.
+
+OPERATIONS: EXISTING KEYS
+
+ractivate can operate without generating you keys. This is an useful
+features if you want to reactivate an existing client without
+generating new keys. The downside of that is that you have to put the
+keys data inside the ini file because the cliadm machine doesn't store
+the private encryption key.
+
+This could eventually be changed sometimes but this wasn't my goal
+right now.
+
+OPERATIONS: UNDO MODE
+
+ractivate tries to operate in a transactional way. Every reversable
+operation that succeed will be reversed if a later step in the set of
+operation fails. This is called 'undo mode'.
+
+Undo mode will work until after application of the KAP is
+attempted. ractivate will not enter undo mode if the application of
+the KAP fails because this operation might succeed partially and leave
+the KPS system in a unexpected state.
+
+ractivate will not enter undo mode in case of unexpected exceptions.
+
+If you don't like the idea of undo mode you can disable it inside the
+configuration file but you will have to manually undo the activation
+steps yourself if something fails.

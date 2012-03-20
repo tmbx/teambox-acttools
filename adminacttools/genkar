@@ -1,0 +1,121 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#!/bin/bash
+#
+# Creates a dummy KAR.
+#
+
+set -x
+
+# Client certificate and key.  Used to sign the KAR.
+CLIENT_SSL_CERT=/home/fdgonthier/repos/tbxsosd/kos_cert.pem
+CLIENT_SSL_KEY=/home/fdgonthier/repos/tbxsosd/kos_skey.pem
+
+# Teambox cert used to encrypt the KAR.
+TEAMBOX_SSL_CERT=/home/fdgonthier/Decrypted/secret/teambox/certs/teambox_kar_sign_cert.pem
+
+mkdir -p /tmp/genkar
+
+tmp_dec_kar_dir=$(mktemp -d /tmp/genkar/L1XX)
+tmp_sig_kar_dir=$(mktemp -d /tmp/genkar/L2XX)
+tmp_sig_kar=$(mktemp /tmp/genkar/L2XX)
+
+cleanup() {
+    # Level 1 KAR directory.
+    [ -d $tmp_dec_kar_dir ] && rm -rf $tmp_dec_kar_dir
+    # Level 2 KAR directory.
+    [ -d $tmp_sig_kar_dir ] && rm -rf $tmp_sig_kar_dir
+
+    # Signed KAR file.
+    [ -d $tmp_sig_kar ] && rm $tmp_sig_kar
+}
+
+trap "cleanup" INT
+
+# 
+# The following code generate a valid KAR structure inside a temporary
+# directory.
+#
+
+mkdir $tmp_dec_kar_dir/kar
+
+# Information file.
+cat > $tmp_dec_kar_dir/kar/info <<EOF
+This is an activation done on the behalf of this organization:
+Country: CA
+State: Québec
+Loc: Sherbrooke
+Org: Opersys
+Org Unit:
+Domain: teambox.co
+Email: fdgonthier@teambox.co
+EOF
+
+# Administrator info
+cat > $tmp_dec_kar_dir/kar/admin <<EOF
+François-Denis Gonthier <fdgonthier@teambox.co>
+EOF
+
+# Product name and version
+cat > $tmp_dec_kar_dir/kar/product_name <<EOF
+KPS
+EOF
+cat > $tmp_dec_kar_dir/kar/product_version <<EOF
+1.3
+EOF
+
+# Encryption key (doesn't need to be valid)
+cat > $tmp_dec_kar_dir/kar/kar.enc.pkey <<EOF
+--- START ENCRYPTION PUBLIC KEY ---
+10
+Mister Source
+AvWVqQAAAAEAAAABAAAAAAAAAAoAAAErKDEwOnB1YmxpYy1rZXkoMzpyc2EoMTpuMjU3OgD1
+9cQfkUmXSOSZOiodtOBgv7Ky3aFnBuQcegm7Q+rB/sWLtOB0LvDJnuE0Q6e8ZOvNZbvutmnD
+jIFAQW9+uLi4Lc52/AcnUyzoKqqD8MA8+fslBaySk5AEIXDvOhl9dTID2RqalxWh1DjMvpUL
+sSG+sVqnaI+mP8RyBRguHn9U8dQmn4/av20qtEw0jZUIzHpaB2v6zljO3N/XQCjiWEi523Ed
+eEFiQ5jLX12wnfsbIvTyrGV31V81AV3M4QFSFmo+K/WrA4uwMHxt6QQdxDGqiJSLocPjN4Iu
+6KEueMaQQqC5ftr91jtXvc0PfThLPFPnJLhUazQ+ru1sFzv8u9BvKSgxOmUzOgEAASkpKQA=
+--- END ENCRYPTION PUBLIC KEY ---
+
+EOF
+
+cp $CLIENT_SSL_CERT $tmp_dec_kar_dir/kar/cert.pem
+
+# Tar-up the KAR data.
+tar -C $tmp_dec_kar_dir -zcvf $tmp_sig_kar_dir/kar.tar.gz .
+
+#
+# Calculate the hash of the new file then sign it, then put it in an
+# uncompressed tarball.
+#
+sha256sum $tmp_sig_kar_dir/kar.tar.gz | cut -d ' ' -f 1 > $tmp_sig_kar_dir/kar_hash
+sslsigntool sign $CLIENT_SSL_CERT $CLIENT_SSL_KEY \
+    $tmp_sig_kar_dir/kar_hash $tmp_sig_kar_dir/kar_sig
+rm $tmp_sig_kar_dir/kar_hash
+tar -C $tmp_sig_kar_dir -cvf $tmp_sig_kar kar_sig kar.tar.gz
+
+#
+# Encrypt the TAR with Teambox keys.
+# 
+openssl smime -encrypt -binary \
+    -outform pem -aes256 \
+    -in $tmp_sig_kar \
+    -out dummy_kar.bin \
+    $TEAMBOX_SSL_CERT
+
+#cleanup

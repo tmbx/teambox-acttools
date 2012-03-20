@@ -1,0 +1,107 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+##!/usr/bin/env python
+
+import os, sys, string, ConfigParser, re
+from acttools import Workdir
+
+# kpython
+from krun import *
+
+# This function reads and returns the data contained in the file specified.
+def read_file(path):
+    f = open(path)
+    data = f.read()
+    f.close()
+    return data
+
+
+# This function does the DB insertion job.
+def do_insertion(tarball_path):
+    workdir = Workdir()
+
+    # Make sure the tarball path is an absolute path.
+    tarball_path = os.path.abspath(tarball_path)
+
+    # Expand the tarball.
+    tarzxvf = Popen(args = ["tar", "-zxvf", tarball_path], stdout = PIPE, stderr = PIPE, cwd = workdir.path())
+    (_, err_text) = tarzxvf.communicate()
+    if tarzxvf.returncode != 0:
+        raise Exception("Tar -zxvf error: %s" % err_text)
+
+    # Parse the config file within the tarball to get the domain list.
+    client_kos = workdir.path() + "/client_kos/"
+    domain_list = []
+
+    try:
+        parser = ConfigParser.ConfigParser()
+        parser.readfp(open(client_kos + "config.ini"))
+        inner_domain_list = parser.items("domains")
+        for pair in inner_domain_list: 
+            if pair[0] != "@":
+                domain_list.append(pair[0])
+
+    except Exception, e:
+        raise Exception("cannot read client configuration: %s" % str(e))
+
+    # Get the KDN and the key ID.
+    kdn = read_file(client_kos + "kdn")
+    key_id = read_file(client_kos + "key_id")
+
+    # Add the organization, get the organization ID.
+    org_id_str = get_cmd_output(["kctl", "addorg", kdn]);
+    match = re.compile("^Added organization no: (\d+).$").match(org_id_str)
+    if not match: raise Exception("cannot parse kctl's 'addorg' command output")
+    org_id = int(match.group(1))
+
+    # Add the group, get the group ID.
+    group_id_str = get_cmd_output(["kctl", "addgroup", str(org_id), kdn]);
+    match = re.compile("^Added group (\d+) to organization \d+.$").match(group_id_str)
+    if not match: raise Exception("cannot parse kctl's 'addgroup' command output")
+    group_id = int(match.group(1))
+
+    # Add the domains to the group.
+    for domain in domain_list:
+        get_cmd_output(["kctl", "addemail", str(group_id), domain])
+
+    # Import the keys.
+    get_cmd_output(["kctl", "importkey", client_kos + "email.sig.pkey"])
+    get_cmd_output(["kctl", "importkey", client_kos + "email.sig.skey"])
+    get_cmd_output(["kctl", "importkey", client_kos + "email.enc.pkey"])
+
+    # Set the key ID.
+    get_cmd_output(["kctl", "setkey", str(group_id), key_id])
+
+    workdir.close()
+
+def main():
+    if len(sys.argv) != 2:
+        sys.stderr.write("Usage: insertclient <client_achive_file>\n")
+        sys.exit(1);
+
+    try:
+        do_insertion(sys.argv[1]);
+
+    except Exception, e:
+        sys.stderr.write("Error: %s\n" % str(e))
+        sys.exit(1)
+
+    sys.exit(0)
+
+
+main();

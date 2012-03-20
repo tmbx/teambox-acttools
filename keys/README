@@ -1,0 +1,5 @@
+Aug 7 2007
+
+Those keys are used to certify communication between the user requesting activation of a KPS and Opersys.  They should not, I repeat, not be imported in any database as they are bound to be changed.
+
+François-Denis Gonthier

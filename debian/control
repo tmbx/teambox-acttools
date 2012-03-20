@@ -1,0 +1,12 @@
+Source: teambox-acttools
+Priority: optional
+Maintainer: Teambox Packages
+Build-Depends: debhelper (>= 4), libktools0-dev, libtagcrypt1-dev, gcc, make, dpkg-dev, libgcrypt11-dev, libktools0-dev, libgnutls-dev, python, openssl (>= 0.9.7), python-support
+Standards-Version: 3.7.2
+Section: libs
+
+Package: teambox-acttools
+Architecture: any
+Depends: ${shlibs:Depends}, kctl (>= 1.3.99), kctllib (>= 4), kpython (>= 1.1.2), python-yaml, python-m2crypto, ${python:Depends}
+Description: Teambox activation tools
+ Activation tools are used to activate Teambox products.

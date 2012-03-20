@@ -1,0 +1,135 @@
+#
+# Copyright (C) 2010-2012 Opersys inc.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; version 2
+# of the License, not any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#!/usr/bin/env python
+# Hey, Emacs! This is a -*- Python -*- file
+
+import cliadmcmds
+import os, sys, string, shutil, ConfigParser, readline, re, time, random, getopt, datetime
+from datetime import datetime, timedelta
+from sys import stdout, stderr
+
+import acttools
+
+# kpython
+from kreadline import *
+
+# This function prints the program usage.
+def print_usage(stream):
+    stream.write("Usage: cliadm [-h] [-D] [-c kdn] [command]\n" +
+                 "\n" +
+                 "If no argument is specified, the program enters interactive mode.\n" +
+                 "Type 'cliadm help' for a list of commands.\n" +
+                 "\n" +
+                 "Options:\n" +
+                 "  -D:       debug mode (let exceptions goes through).\n" +
+                 "  -h:       print this help message and exit.\n" +
+                 "  -y:       assume 'yes' to all confirmations.\n" +
+                 "  -c <kdn>: select this client before executing a command.\n\n")
+
+def main():
+    debug = False
+    client_conf = None
+    admin_conf = None
+    climgr = None
+
+    # Parse the options.
+    try:
+       (options, cmd_args) = getopt.gnu_getopt(sys.argv[1:], "Dhyc:")
+
+    except Exception, e:
+        stderr.write("Error: %s.\n" % str(e))
+        print_usage(stderr)
+        sys.exit(1)
+
+    # Handle the options.
+    for opt in options:
+        if opt[0] == '-h':
+            print_usage(stdout)
+            sys.exit(0)
+
+    # Initialize the global cliadm configuration variable.
+    config_path = os.path.expanduser("~/.cliadm.conf")
+    if not os.path.isfile(config_path):
+        stderr.write("The file '~/.cliadm.conf' does not exist. Here's a sample:\n\n")
+        print "[config]\n"\
+              "teambox_ssl_cert_path =     /usr/share/teambox-acttools/teambox-cert.pem\n"\
+              "teambox_ssl_key_path =      /usr/share/teambox-acttools/teambox-key.pem\n"\
+              "teambox_email_pkey_path =   /usr/share/teambox-acttools/act.sig.pkey\n"\
+              "teambox_email_skey_path =   /usr/share/teambox-acttools/act.sig.skey\n"\
+              "teambox_license_skey_path = /usr/share/teambox-acttools/license.skey\n"\
+              "key_id_map_path =            /usr/share/teambox-acttools/key_id.map\n"\
+              "client_db_path =             /usr/share/teambox-acttools/clients\n"\
+              "trusted_ca_path =            /usr/share/teambox-acttools/trusted_ca\n"\
+              "bundle_path =                /usr/share/teambox-acttools/kps_bundle.bin\n"\
+              "\n"\
+              "teambox_ca_config =         \n"\
+              "teambox_ca_cert_path =      \n"\
+              "teambox_ca_key_path =       \n"
+
+        sys.exit(1)
+
+    try:
+        admin_conf = cliadmcmds.AdminConfig(config_path)
+        climgr = cliadmcmds.ClientManager(admin_conf)
+
+    except Exception, e:
+        stderr.write("Error: %s\n" % str(e))
+        raise
+
+    intr = CommandInterpreter(cliadmcmds.command_classes, "> ", debug_mode = debug)
+
+    intr.client_conf = client_conf
+    intr.admin_conf = admin_conf
+    intr.climgr = climgr
+    intr.assume_answer = None
+
+    # Handle the options.
+    for opt in options:
+        if opt[0] == '-y':
+            intr.assume_answer = 'yes'
+        if opt[0] == '-c':
+            kdn = opt[1]
+
+            if not kdn in climgr:
+                stderr.write("Client '%s' does not exist.\n" % (kdn))
+                sys.exit(1)
+
+            try:
+                intr.run_command(["cd", kdn])
+
+            except Exception, e:
+                if debug: raise
+                stderr.write("Error: %s.\n" % str(e))
+                sys.exit(1)
+
+        if opt[0] == '-D':
+            debug = True
+
+    intr.debug = debug
+
+    # Run a single command from the command line.
+    if cmd_args:
+        sys.exit(intr.run_command(cmd_args))
+
+    # Require user confirmation for commands.
+    intr.admin_conf.enable_confirm = 1
+
+    intr.loop()
+
+if __name__ == "__main__":
+    main()

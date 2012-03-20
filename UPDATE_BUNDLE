@@ -1,0 +1,43 @@
+ABOUT THE SCRIPT
+
+Update bundle is a script that is to be used to refresh the tbxsosd
+bundle from the last repository sources on Ketchup.
+
+It supports the creation a stable and unstable bundle.
+
+STABLE AND UNSTABLE BUNDLES
+
+The stable bundle is the bundle to be used for client activation on
+production sites. Once it is established, it should not be changed
+until a next major release.
+
+The unstable bundle might be regenerated at will during development of
+a new version. It can be used to activate test servers or new servers
+to be setup as production server.
+
+UPDATING A BUNDLE
+
+The update_bundle scripts has 2 subcommands:
+
+    update_bundle new
+
+which refreshes the unstable bundle, and:
+
+    update_bundle commit
+
+which changes the stable bundle with the content of the currently
+unstable bundle. This won't ask for confirmation so please consider
+what you are doing before using 'commit'.
+
+CHOOSING THE BUNDLE
+
+The stable bundle is the one that is choosen by default by cliadm
+during the standard activation process. You don't have to do anything
+to select the stable bundle.
+
+To select the unstable bundle for a client, use the 'genkap' command
+with the 'unstable' parameter. If you are using the wizard, simply
+walk through each wizard steps like you normally would. Once the
+wizard finished, use the 'genkap' command with the unstable parameter
+to produce another KAP for the client you just created that is
+including the unstable KAP.
